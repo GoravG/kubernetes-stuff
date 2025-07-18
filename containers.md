@@ -2176,8 +2176,6 @@ You should see a response from the Pod.
 
 - Let's create a Service for our Deployment
 
-.lab[
-
 - Expose the HTTP port of our server:
   ```bash
 	pi@pi-red:~ $ kubectl expose deployment blue --port=80
@@ -2393,5 +2391,3058 @@ kube-dns   ClusterIP   10.96.0.10   <none>        53/UDP,53/TCP,9153/TCP   98m
 - Service addresses are independent from pods' addresses
 
   (when a pod fails, the service seamlessly sends traffic to its replacement)
+
+# Service Types
+
+- There are different types of services:
+
+  `ClusterIP`, `NodePort`, `LoadBalancer`, `ExternalName`
+
+- There are also *headless services*
+
+- Services can also have optional *external IPs*
+
+- There is also another resource type called *Ingress*
+
+  (specifically for HTTP services)
+
+- Wow, that's a lot! Let's start with the basics ...
+
+## `ClusterIP`
+
+- It's the default service type
+
+- A virtual IP address is allocated for the service
+
+  (in an internal, private range; e.g. 10.96.0.0/12)
+
+- This IP address is reachable only from within the cluster (nodes and pods)
+
+- Our code can connect to the service using the original port number
+
+- Perfect for internal communication, within the cluster
+
+## `LoadBalancer`
+
+- An external load balancer is allocated for the service
+
+  (typically a cloud load balancer, e.g. ELB on AWS, GLB on GCE ...)
+
+- This is available only when the underlying infrastructure provides some kind of
+  "load balancer as a service"
+
+- Each service of that type will typically cost a little bit of money
+
+  (e.g. a few cents per hour on AWS or GCE)
+
+- Ideally, traffic would flow directly from the load balancer to the pods
+
+- In practice, it will often flow through a `NodePort` first
+
+## `NodePort`
+
+- A port number is allocated for the service
+
+  (by default, in the 30000-32767 range)
+
+- That port is made available *on all our nodes* and anybody can connect to it
+
+  (we can connect to any node on that port to reach the service)
+
+- Our code needs to be changed to connect to that new port number
+
+- Under the hood: `kube-proxy` sets up a bunch of `iptables` rules on our nodes
+
+- Sometimes, it's the only available option for external traffic
+
+  (e.g. most clusters deployed with kubeadm or on-premises)
+
+## `ExternalName`
+
+- Services of type `ExternalName` are quite different
+
+- No load balancer (internal or external) is created
+
+- Only a DNS entry gets added to the DNS managed by Kubernetes
+
+- That DNS entry will just be a `CNAME` to a provided record
+
+Example:
+```bash
+kubectl create service externalname k8s --external-name kubernetes.io
+```
+*Creates a CNAME `k8s` pointing to `kubernetes.io`*
+
+## External IPs
+
+- We can add an External IP to a service, e.g.:
+  ```bash
+  kubectl expose deploy my-little-deploy --port=80 --external-ip=1.2.3.4
+  ```
+
+- `1.2.3.4` should be the address of one of our nodes
+
+  (it could also be a virtual address, service address, or VIP, shared by multiple nodes)
+
+- Connections to `1.2.3.4:80` will be sent to our service
+
+- External IPs will also show up on services of type `LoadBalancer`
+
+  (they will be added automatically by the process provisioning the load balancer)
+
+## Headless services
+
+- Sometimes, we want to access our scaled services directly:
+
+  - if we want to save a tiny little bit of latency (typically less than 1ms)
+
+  - if we need to connect over arbitrary ports (instead of a few fixed ones)
+
+  - if we need to communicate over another protocol than UDP or TCP
+
+  - if we want to decide how to balance the requests client-side
+
+  - ...
+
+- In that case, we can use a "headless service"
+
+
+## Creating a headless services
+
+- A headless service is obtained by setting the `clusterIP` field to `None`
+
+  (Either with `--cluster-ip=None`, or by providing a custom YAML)
+
+- As a result, the service doesn't have a virtual IP address
+
+- Since there is no virtual IP address, there is no load balancer either
+
+- CoreDNS will return the pods' IP addresses as multiple `A` records
+
+- This gives us an easy way to discover all the replicas for a deployment
+
+## Services and endpoints
+
+- A service has a number of "endpoints"
+
+- Each endpoint is a host + port where the service is available
+
+- The endpoints are maintained and updated automatically by Kubernetes
+
+- Check the endpoints that Kubernetes has associated with our `blue` service:
+  ```bash
+	pi@pi-red:~ $ kubectl describe service blue
+	Name:                     blue
+	Namespace:                default
+	Labels:                   app=blue
+	Annotations:              <none>
+	Selector:                 app=blue
+	Type:                     ClusterIP
+	IP Family Policy:         SingleStack
+	IP Families:              IPv4
+	IP:                       10.100.210.2
+	IPs:                      10.100.210.2
+	Port:                     <unset>  80/TCP
+	TargetPort:               80/TCP
+	Endpoints:                10.244.1.20:80
+	Session Affinity:         None
+	Internal Traffic Policy:  Cluster
+	Events:                   <none>
+
+	pi@pi-red:~ $ kubectl describe service blue
+	Name:                     blue
+	Namespace:                default
+	Labels:                   app=blue
+	Annotations:              <none>
+	Selector:                 app=blue
+	Type:                     ClusterIP
+	IP Family Policy:         SingleStack
+	IP Families:              IPv4
+	IP:                       10.100.210.2
+	IPs:                      10.100.210.2
+	Port:                     <unset>  80/TCP
+	TargetPort:               80/TCP
+	Endpoints:                10.244.1.20:80,10.244.1.21:80,10.244.1.22:80
+	Session Affinity:         None
+	Internal Traffic Policy:  Cluster
+	Events:                   <none>
+
+  ```
+
+In the output, there will be a line starting with `Endpoints:`. for example earlier when we had only one replica for the pod in that case it was only 10.244.1.20:80 and when we scaled the deployment to three replicase then the endpoints are now 10.244.1.20:80,10.244.1.21:80 and 10.244.1.22:80
+
+That line will list a bunch of addresses in `host:port` format.
+
+## Viewing endpoint details
+
+- When we have many endpoints, our display commands truncate the list
+  ```bash
+	pi@pi-red:~ $ kubectl get endpoints
+	Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+	NAME         ENDPOINTS                                      AGE
+	blue         10.244.1.20:80,10.244.1.21:80,10.244.1.22:80   5m56s
+	kubernetes   192.168.0.152:6443                             13m
+  ```
+
+- If we want to see the full list, we can use one of the following commands:
+  ```bash
+	pi@pi-red:~ $ kubectl describe endpoints blue
+	Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+	Name:         blue
+	Namespace:    default
+	Labels:       app=blue
+				endpoints.kubernetes.io/managed-by=endpoint-controller
+	Annotations:  endpoints.kubernetes.io/last-change-trigger-time: 2025-07-15T14:57:56Z
+	Subsets:
+	Addresses:          10.244.1.20,10.244.1.21,10.244.1.22
+	NotReadyAddresses:  <none>
+	Ports:
+		Name     Port  Protocol
+		----     ----  --------
+		<unset>  80    TCP
+
+	Events:  <none>
+
+	pi@pi-red:~ $ kubectl get endpoints blue -o yaml
+	Warning: v1 Endpoints is deprecated in v1.33+; use discovery.k8s.io/v1 EndpointSlice
+	apiVersion: v1
+	kind: Endpoints
+	metadata:
+	annotations:
+		endpoints.kubernetes.io/last-change-trigger-time: "2025-07-15T14:57:56Z"
+	creationTimestamp: "2025-07-15T14:54:54Z"
+	labels:
+		app: blue
+		endpoints.kubernetes.io/managed-by: endpoint-controller
+	name: blue
+	namespace: default
+	resourceVersion: "1495"
+	uid: daa03739-09c3-4c6b-af8f-e7e65c171163
+	subsets:
+	- addresses:
+	- ip: 10.244.1.20
+		nodeName: pi-black
+		targetRef:
+		kind: Pod
+		name: blue-5c986bd7bf-r7lqd
+		namespace: default
+		uid: 91907dbe-6529-4d34-8861-1b61adc49a82
+	- ip: 10.244.1.21
+		nodeName: pi-black
+		targetRef:
+		kind: Pod
+		name: blue-5c986bd7bf-jfsgr
+		namespace: default
+		uid: 90494f43-caf7-42ee-842c-ed4bc5ab2229
+	- ip: 10.244.1.22
+		nodeName: pi-black
+		targetRef:
+		kind: Pod
+		name: blue-5c986bd7bf-5gv2d
+		namespace: default
+		uid: adea4fb5-97b6-4e14-a03f-10de51027815
+	ports:
+	- port: 80
+		protocol: TCP
+  ```
+
+- These commands will show us a list of IP addresses
+
+- These IP addresses should match the addresses of the corresponding pods:
+  ```bash
+	pi@pi-red:~ $ kubectl get pods -l app=blue -o wide
+	NAME                    READY   STATUS    RESTARTS   AGE     IP            NODE       NOMINATED NODE   READINESS GATES
+	blue-5c986bd7bf-5gv2d   1/1     Running   0          4m41s   10.244.1.22   pi-black   <none>           <none>
+	blue-5c986bd7bf-jfsgr   1/1     Running   0          4m41s   10.244.1.21   pi-black   <none>           <none>
+	blue-5c986bd7bf-r7lqd   1/1     Running   0          11m     10.244.1.20   pi-black   <none>           <none>
+  ```
+
+## `endpoints` not `endpoint`
+
+- `endpoints` is the only resource that cannot be singular
+
+```bash
+pi@pi-red:~ $ kubectl get endpoint
+error: the server doesn't have a resource type "endpoint"
+```
+
+- This is because the type itself is plural (unlike every other resource)
+
+- There is no `endpoint` object: `type Endpoints struct`
+
+- The type doesn't represent a single endpoint, but a list of endpoints
+
+## `Ingress`
+
+- Ingresses are another type (kind) of resource
+
+- They are specifically for HTTP services
+
+  (not TCP or UDP)
+
+- They can also handle TLS certificates, URL rewriting ...
+
+- They require an *Ingress Controller* to function
+
+## Traffic engineering
+
+- By default, connections to a ClusterIP or a NodePort are load balanced
+  across all the backends of their Service
+
+- This can incur extra network hops (which add latency)
+
+- To remove that extra hop, multiple mechanisms are available:
+
+  - `spec.externalTrafficPolicy`
+
+  - `spec.internalTrafficPolicy`
+
+  - [Topology aware routing](https://kubernetes.io/docs/concepts/services-networking/topology-aware-routing/) annotation (beta)
+
+  - `spec.trafficDistribution` (alpha in 1.30, beta in 1.31)
+
+## `internal / externalTrafficPolicy`
+
+- Applies respectively to `ClusterIP` and `NodePort` connections
+
+- Can be set to `Cluster` or `Local`
+
+- `Cluster`: load balance connections across all backends (default)
+
+- `Local`: load balance connections to local backends (on the same node)
+
+- With `Local`, if there is no local backend, the connection will fail!
+
+  (the parameter expresses a "hard rule", not a preference)
+
+- Example: `externalTrafficPolicy: Local` for Ingress controllers
+
+  (as shown on earlier diagrams)
+
+## Topology aware routing
+
+- In beta since Kubernetes 1.23
+
+- Enabled with annotation `service.kubernetes.io/topology-mode=Auto` 
+
+- Relies on node label `topology.kubernetes.io/zone`
+
+- Kubernetes service proxy will try to keep connections within a zone
+
+  (connections made by a pod in zone `a` will be sent to pods in zone `a`)
+
+- ...Except if there are no pods in the zone (then fallback to all zones)
+
+- This can mess up autoscaling!
+
+## `spec.trafficDistribution`
+
+- [KEP4444, Traffic Distribution for Services][kep4444]
+
+- In alpha since Kubernetes 1.30, beta since Kubernetes 1.31
+
+- Should eventually supersede topology aware routing
+
+- Can be set to `PreferClose` (more values might be supported later)
+
+- The meaning of `PreferClose` is implementation dependent
+
+  (with kube-proxy, it should work like topology aware routing: stay in a zone)
+
+[kep4444]: https://github.com/kubernetes/enhancements/issues/4444
+
+# Kubernetes network model
+
+- TL,DR:
+
+  *Our cluster (nodes and pods) is one big flat IP network.*
+
+- In detail:
+
+ - all nodes must be able to reach each other, without NAT
+
+ - all pods must be able to reach each other, without NAT
+
+ - pods and nodes must be able to reach each other, without NAT
+
+ - each pod is aware of its IP address (no NAT)
+
+ - pod IP addresses are assigned by the network implementation
+
+- Kubernetes doesn't mandate any particular implementation
+
+---
+
+## Kubernetes network model: the good
+
+- Everything can reach everything
+
+- No address translation
+
+- No port translation
+
+- No new protocol
+
+- The network implementation can decide how to allocate addresses
+
+- IP addresses don't have to be "portable" from a node to another
+
+  (We can use e.g. a subnet per node and use a simple routed topology)
+
+- The specification is simple enough to allow many various implementations
+
+---
+
+## Kubernetes network model: the less good
+
+- Everything can reach everything
+
+  - if you want security, you need to add network policies
+
+  - the network implementation that you use needs to support them
+
+- There are literally dozens of implementations out there
+
+  (https://github.com/containernetworking/cni/ lists more than 25 plugins)
+
+- Pods have level 3 (IP) connectivity, but *services* are level 4 (TCP or UDP)
+
+  (Services map to a single UDP or TCP port; no port ranges or arbitrary IP packets)
+
+- `kube-proxy` is on the data path when connecting to a pod or container,
+  <br/>and it's not particularly fast (relies on userland proxying or iptables)
+
+---
+
+## Kubernetes network model: in practice
+
+- The nodes that we are using have been set up to use [Weave](https://github.com/weaveworks/weave)
+
+- We don't endorse Weave in a particular way, it just Works For Us
+
+- Don't worry about the warning about `kube-proxy` performance
+
+- Unless you:
+
+  - routinely saturate 10G network interfaces
+  - count packet rates in millions per second
+  - run high-traffic VOIP or gaming platforms
+  - do weird things that involve millions of simultaneous connections
+    <br/>(in which case you're already familiar with kernel tuning)
+
+- If necessary, there are alternatives to `kube-proxy`; e.g.
+  [`kube-router`](https://www.kube-router.io)
+
+## The Container Network Interface (CNI)
+
+- Most Kubernetes clusters use CNI "plugins" to implement networking
+
+- When a pod is created, Kubernetes delegates the network setup to these plugins
+
+  (it can be a single plugin, or a combination of plugins, each doing one task)
+
+- Typically, CNI plugins will:
+
+  - allocate an IP address (by calling an IPAM plugin)
+
+  - add a network interface into the pod's network namespace
+
+  - configure the interface as well as required routes etc.
+
+# Shipping images with a registry
+
+- Initially, our app was running on a single node
+
+- We could *build* and *run* in the same place
+
+- Therefore, we did not need to *ship* anything
+
+- Now that we want to run on a cluster, things are different
+
+- The easiest way to ship container images is to use a registry
+
+## How Docker registries work (a reminder)
+
+- What happens when we execute `docker run alpine` ?
+
+- If the Engine needs to pull the `alpine` image, it expands it into `library/alpine`
+
+- `library/alpine` is expanded into `index.docker.io/library/alpine`
+
+- The Engine communicates with `index.docker.io` to retrieve `library/alpine:latest`
+
+- To use something else than `index.docker.io`, we specify it in the image name
+
+- Examples:
+  ```bash
+	pi@pi-red:~ $ docker pull gcr.io/google-containers/alpine-with-bash:1.0
+	1.0: Pulling from google-containers/alpine-with-bash
+	a7fe934dc22a: Pull complete 
+	a3ed95caeb02: Pull complete 
+	0722d2bf1942: Pull complete 
+	Digest: sha256:0955672451201896cf9e2e5ce30bec0c7f10757af33bf78b7a6afa5672c596f5
+	Status: Downloaded newer image for gcr.io/google-containers/alpine-with-bash:1.0
+	gcr.io/google-containers/alpine-with-bash:1.0
+	pi@pi-red:~ $ docker images
+	REPOSITORY                                  TAG       IMAGE ID       CREATED        SIZE
+	dockercoins-hasher                          latest    bffe12375301   2 weeks ago    330MB
+	dockercoins-webui                           latest    dcd8267cb6f5   2 weeks ago    214MB
+	dockercoins-worker                          latest    3a66d0a5edb5   2 weeks ago    63.5MB
+	dockercoins-rng                             latest    46024a38c668   2 weeks ago    62.2MB
+	goravg/instadish                            tag       fa633da41867   3 weeks ago    54.2MB
+	<none>                                      <none>    8c161ed7e7d0   5 weeks ago    646MB
+	alpine                                      <none>    2abc5e834071   6 weeks ago    8.52MB
+	redis                                       latest    c1ae424e8e63   7 weeks ago    150MB
+	hello-world                                 latest    f1f77a0f96b7   5 months ago   5.2kB
+	gcr.io/google-containers/alpine-with-bash   1.0       822c13824dc2   9 years ago    6.67MB
+
+  docker build -t registry.mycompany.io:5000/myimage:awesome .
+  docker push registry.mycompany.io:5000/myimage:awesome
+  ```
+
+---
+
+## Running DockerCoins on Kubernetes
+
+- Create one deployment for each component
+
+  (hasher, redis, rng, webui, worker)
+
+- Expose deployments that need to accept connections
+
+  (hasher, redis, rng, webui)
+
+- For redis, we can use the official redis image
+
+- For the 4 others, we need to build images and push them to some registry
+
+---
+
+## Building and shipping images
+
+- There are *many* options!
+
+- Manually:
+
+  - build locally (with `docker build` or otherwise)
+
+  - push to the registry
+
+- Automatically:
+
+  - build and test locally
+
+  - when ready, commit and push a code repository
+
+  - the code repository notifies an automated build system
+
+  - that system gets the code, builds it, pushes the image to the registry
+
+---
+
+## Which registry do we want to use?
+
+- There are SAAS products like Docker Hub, Quay ...
+
+- Each major cloud provider has an option as well
+
+  (ACR on Azure, ECR on AWS, GCR on Google Cloud...)
+
+- There are also commercial products to run our own registry
+
+  (Docker EE, Quay...)
+
+- And open source options, too!
+
+- When picking a registry, pay attention to its build system
+
+  (when it has one)
+
+## Self-hosting our registry
+
+*Note: this section shows how to run the Docker
+open source registry and use it to ship images
+on our cluster. While this method works fine,
+we recommend that you consider using one of the
+hosted, free automated build services instead.
+It will be much easier!*
+
+*If you need to run a registry on premises,
+this section gives you a starting point, but
+you will need to make a lot of changes so that
+the registry is secured, highly available, and
+so that your build pipeline is automated.*
+
+---
+
+## Using the open source registry
+
+- We need to run a `registry` container
+
+- It will store images and layers to the local filesystem
+  <br/>(but you can add a config file to use S3, Swift, etc.)
+
+- Docker *requires* TLS when communicating with the registry
+
+  - unless for registries on `127.0.0.0/8` (i.e. `localhost`)
+
+  - or with the Engine flag `--insecure-registry`
+
+- Our strategy: publish the registry container on a NodePort,
+  <br/>so that it's available through `127.0.0.1:xxxxx` on each node
+
+---
+
+## Deploying a self-hosted registry
+
+- We will deploy a registry container, and expose it with a NodePort
+
+.lab[
+
+- Create the registry service:
+  ```bash
+  kubectl create deployment registry --image=registry
+  ```
+
+- Expose it on a NodePort:
+  ```bash
+  kubectl expose deploy/registry --port=5000 --type=NodePort
+  ```
+
+## Connecting to our registry
+
+- We need to find out which port has been allocated
+
+- View the service details:
+  ```bash
+  kubectl describe svc/registry
+  ```
+
+- Get the port number programmatically:
+  ```bash
+  NODEPORT=$(kubectl get svc/registry -o json | jq .spec.ports[0].nodePort)
+  REGISTRY=127.0.0.1:$NODEPORT
+  ```
+
+---
+
+## Testing our registry
+
+- A convenient Docker registry API route to remember is `/v2/_catalog`
+
+- View the repositories currently held in our registry:
+  ```bash
+  curl $REGISTRY/v2/_catalog
+  ```
+
+--
+
+We should see:
+```json
+{"repositories":[]}
+```
+
+---
+
+## Testing our local registry
+
+- We can retag a small image, and push it to the registry
+
+- Make sure we have the busybox image, and retag it:
+  ```bash
+  docker pull busybox
+  docker tag busybox $REGISTRY/busybox
+  ```
+
+- Push it:
+  ```bash
+  docker push $REGISTRY/busybox
+  ```
+
+---
+
+## Checking again what's on our local registry
+
+- Let's use the same endpoint as before
+
+- Ensure that our busybox image is now in the local registry:
+  ```bash
+  curl $REGISTRY/v2/_catalog
+  ```
+
+The curl command should now output:
+```json
+{"repositories":["busybox"]}
+```
+
+```bash
+pi@pi-red:~ $ kubectl create deployment registry --image=registry
+deployment.apps/registry created
+pi@pi-red:~ $ kubectl expose deploy/registry --port=5000 --type=NodePort
+service/registry exposed
+pi@pi-red:~ $ kubectl describe svc/registry
+Name:                     registry
+Namespace:                default
+Labels:                   app=registry
+Annotations:              <none>
+Selector:                 app=registry
+Type:                     NodePort
+IP Family Policy:         SingleStack
+IP Families:              IPv4
+IP:                       10.100.144.151
+IPs:                      10.100.144.151
+Port:                     <unset>  5000/TCP
+TargetPort:               5000/TCP
+NodePort:                 <unset>  30470/TCP
+Endpoints:                
+Session Affinity:         None
+External Traffic Policy:  Cluster
+Internal Traffic Policy:  Cluster
+Events:                   <none>
+pi@pi-red:~ $ NODEPORT=$(kubectl get svc/registry -o json | jq .spec.ports[0].nodePort)
+REGISTRY=127.0.0.1:$NODEPORT
+pi@pi-red:~ $ echo $NODEPORT
+30470
+pi@pi-red:~ $ curl $REGISTRY/v2/_catalog
+{"repositories":[]}
+pi@pi-red:~ $ docker pull busybox
+Using default tag: latest
+latest: Pulling from library/busybox
+189fdd150837: Pull complete 
+Digest: sha256:f85340bf132ae937d2c2a763b8335c9bab35d6e8293f70f606b9c6178d84f42b
+Status: Downloaded newer image for busybox:latest
+docker.io/library/busybox:latest
+pi@pi-red:~ $ docker tag busybox $REGISTRY/busybox
+pi@pi-red:~ $ docker push $REGISTRY/busybox
+Using default tag: latest
+The push refers to repository [127.0.0.1:30470/busybox]
+9fa34069244e: Pushed 
+latest: digest: sha256:2278daae78b8899e6c7192a8a6f49763b9e0cde6fcf94de34f115df4401b955f size: 527
+pi@pi-red:~ $ curl $REGISTRY/v2/_catalog
+{"repositories":["busybox"]}
+```
+
+## Building and pushing our images
+
+- We are going to use a convenient feature of Docker Compose
+
+- Go to the `stacks` directory:
+  ```bash
+  cd ~/container.training/stacks
+  ```
+
+- Build and push the images:
+```bash
+pi@pi-red:~/container.training/stacks $ export REGISTRY
+pi@pi-red:~/container.training/stacks $ export TAG=0.1
+pi@pi-red:~/container.training/stacks $ docker compose -f dockercoins.yml build
+WARN[0000] /home/pi/container.training/stacks/dockercoins.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion 
+Compose can now delegate builds to bake for better performance.
+ To do so, set COMPOSE_BAKE=true.
+[+] Building 146.3s (39/39) FINISHED                                                                                                                                 docker:default
+ => [rng internal] load build definition from Dockerfile                                                                                                                       0.1s
+ => => transferring dockerfile: 127B                                                                                                                                           0.0s
+ => [worker internal] load build definition from Dockerfile                                                                                                                    0.1s
+ => => transferring dockerfile: 148B                                                                                                                                           0.0s
+ => [hasher internal] load build definition from Dockerfile                                                                                                                    0.1s
+ => => transferring dockerfile: 224B                                                                                                                                           0.0s
+ => [webui internal] load build definition from Dockerfile                                                                                                                     0.1s
+ => => transferring dockerfile: 177B                                                                                                                                           0.0s
+ => [rng internal] load metadata for docker.io/library/python:alpine                                                                                                           2.9s
+ => [webui internal] load metadata for docker.io/library/node:4-slim                                                                                                           1.7s
+ => [hasher internal] load metadata for docker.io/library/ruby:alpine                                                                                                          4.7s
+ => [webui internal] load .dockerignore                                                                                                                                        0.0s
+ => => transferring context: 2B                                                                                                                                                0.0s
+ => [webui 1/5] FROM docker.io/library/node:4-slim@sha256:26e655b2f02a3a030d52529cc09d4036fe17e270c8b4477bfa17db75ee301405                                                     0.0s
+ => [webui internal] load build context                                                                                                                                        0.0s
+ => => transferring context: 258B                                                                                                                                              0.0s
+ => CACHED [webui 2/5] RUN npm install express@4                                                                                                                               0.0s
+ => CACHED [webui 3/5] RUN npm install redis@3                                                                                                                                 0.0s
+ => CACHED [webui 4/5] COPY files/ /files/                                                                                                                                     0.0s
+ => CACHED [webui 5/5] COPY webui.js /                                                                                                                                         0.0s
+ => [webui] exporting to image                                                                                                                                                 0.1s
+ => => exporting layers                                                                                                                                                        0.0s
+ => => writing image sha256:7f5445c11b55f3e402e6184af63024eccebe7e2dfee8b17b3852e1d7ad8fb31b                                                                                   0.0s
+ => => naming to 127.0.0.1:30470/webui:0.1                                                                                                                                     0.0s
+ => [webui] resolving provenance for metadata file                                                                                                                             0.0s
+ => [rng internal] load .dockerignore                                                                                                                                          0.0s
+ => => transferring context: 2B                                                                                                                                                0.0s
+ => [worker internal] load .dockerignore                                                                                                                                       0.0s
+ => => transferring context: 2B                                                                                                                                                0.0s
+ => [rng 1/3] FROM docker.io/library/python:alpine@sha256:37b14db89f587f9eaa890e4a442a3fe55db452b69cca1403cc730bd0fbdc8aaf                                                     8.0s
+ => => resolve docker.io/library/python:alpine@sha256:37b14db89f587f9eaa890e4a442a3fe55db452b69cca1403cc730bd0fbdc8aaf                                                         0.1s
+ => => sha256:2a1e63308567d449f0609869766498f5a8d25ddd56538b8dc7a205590da5d732 5.21kB / 5.21kB                                                                                 0.0s
+ => => sha256:6e174226ea690ced550e5641249a412cdbefd2d09871f3e64ab52137a54ba606 4.13MB / 4.13MB                                                                                 3.4s
+ => => sha256:d125fdbed4e4ca1d8631d4c952dfbc9fd0aded64865d69eb3c9951e98d6c76fb 449.54kB / 449.54kB                                                                             0.4s
+ => => sha256:bcd636e59cfbeb2967d10c7fe5f443b4d16c981fbd523ffee59799ffcaaa8c58 12.55MB / 12.55MB                                                                               5.2s
+ => => sha256:37b14db89f587f9eaa890e4a442a3fe55db452b69cca1403cc730bd0fbdc8aaf 10.29kB / 10.29kB                                                                               0.0s
+ => => sha256:40c7f36cc642a93b74e1de68f4c1b137db04b5fc2ca8eefe83846015bc129974 1.74kB / 1.74kB                                                                                 0.0s
+ => => sha256:2829f301ad519e4a03916d33dfe9077d0c9828693fdac899af12841fa06a3593 248B / 248B                                                                                     0.8s
+ => => extracting sha256:6e174226ea690ced550e5641249a412cdbefd2d09871f3e64ab52137a54ba606                                                                                      0.4s
+ => => extracting sha256:d125fdbed4e4ca1d8631d4c952dfbc9fd0aded64865d69eb3c9951e98d6c76fb                                                                                      0.3s
+ => => extracting sha256:bcd636e59cfbeb2967d10c7fe5f443b4d16c981fbd523ffee59799ffcaaa8c58                                                                                      2.2s
+ => => extracting sha256:2829f301ad519e4a03916d33dfe9077d0c9828693fdac899af12841fa06a3593                                                                                      0.0s
+ => [rng internal] load build context                                                                                                                                          0.1s
+ => => transferring context: 28B                                                                                                                                               0.0s
+ => [worker internal] load build context                                                                                                                                       0.1s
+ => => transferring context: 31B                                                                                                                                               0.0s
+ => [hasher internal] load .dockerignore                                                                                                                                       0.0s
+ => => transferring context: 2B                                                                                                                                                0.0s
+ => [hasher 1/5] FROM docker.io/library/ruby:alpine@sha256:60d0ffed16d3cfbb3cd42c05f3c3a1c23db85d69716b06895fa54891805a7d65                                                   27.8s
+ => => resolve docker.io/library/ruby:alpine@sha256:60d0ffed16d3cfbb3cd42c05f3c3a1c23db85d69716b06895fa54891805a7d65                                                           0.1s
+ => => sha256:60d0ffed16d3cfbb3cd42c05f3c3a1c23db85d69716b06895fa54891805a7d65 10.24kB / 10.24kB                                                                               0.0s
+ => => sha256:bf8c97bbbb0ce64c7d1c1d0f9386639dcb38ca9779bb32e8ecc9db6dcb94bbb4 1.73kB / 1.73kB                                                                                 0.0s
+ => => sha256:4bb51c90b8c7c6181d8f7cb4dcbd922a7a8106d077b976e299845bbf2ec11486 5.84kB / 5.84kB                                                                                 0.0s
+ => => sha256:6e174226ea690ced550e5641249a412cdbefd2d09871f3e64ab52137a54ba606 4.13MB / 4.13MB                                                                                 1.6s
+ => => sha256:078cb8a2bfe13afc4b6f0d43fa0f60131167c5839b5036be2d4a98c463f0328b 191B / 191B                                                                                     0.3s
+ => => sha256:5545c38d7646c487db52f03cd37e75eb6440d7da64ced81db675c915c88bebb3 39.09MB / 39.09MB                                                                              13.6s
+ => => extracting sha256:6e174226ea690ced550e5641249a412cdbefd2d09871f3e64ab52137a54ba606                                                                                      0.4s
+ => => sha256:3b6797b312992033f598a87cafc9bb4f8aab20e59e342cb2ab508847f3b13874 138B / 138B                                                                                     3.9s
+ => => extracting sha256:078cb8a2bfe13afc4b6f0d43fa0f60131167c5839b5036be2d4a98c463f0328b                                                                                      0.0s
+ => => extracting sha256:5545c38d7646c487db52f03cd37e75eb6440d7da64ced81db675c915c88bebb3                                                                                      6.0s
+ => => extracting sha256:3b6797b312992033f598a87cafc9bb4f8aab20e59e342cb2ab508847f3b13874                                                                                      0.0s
+ => [hasher internal] load build context                                                                                                                                       0.0s
+ => => transferring context: 31B                                                                                                                                               0.0s
+ => [worker 2/4] RUN pip install redis                                                                                                                                        24.2s
+ => [rng 2/3] RUN pip install Flask                                                                                                                                           25.8s
+ => [hasher 2/5] RUN apk add --update build-base curl                                                                                                                         36.5s
+ => [worker 3/4] RUN pip install requests                                                                                                                                     10.9s
+ => [rng 3/3] COPY rng.py /                                                                                                                                                    0.8s
+ => [rng] exporting to image                                                                                                                                                   1.2s
+ => => exporting layers                                                                                                                                                        1.1s
+ => => writing image sha256:836ef37963f97125908233ced84993c66d63303949cfe460959054b45ca3b7c1                                                                                   0.0s
+ => => naming to 127.0.0.1:30470/rng:0.1                                                                                                                                       0.0s
+ => [rng] resolving provenance for metadata file                                                                                                                               0.0s
+ => [worker 4/4] COPY worker.py /                                                                                                                                              0.8s
+ => [worker] exporting to image                                                                                                                                                0.7s
+ => => exporting layers                                                                                                                                                        0.7s
+ => => writing image sha256:9e190f44e891d5965a0ea4c473c098521e2efd3b6bc275563963106c425c93c8                                                                                   0.0s
+ => => naming to 127.0.0.1:30470/worker:0.1                                                                                                                                    0.0s
+ => [worker] resolving provenance for metadata file                                                                                                                            0.0s
+ => [hasher 3/5] RUN gem install sinatra --version '~> 3'                                                                                                                      3.7s
+ => [hasher 4/5] RUN gem install thin --version '~> 1'                                                                                                                        66.6s
+ => [hasher 5/5] ADD hasher.rb /                                                                                                                                               0.2s
+ => [hasher] exporting to image                                                                                                                                                6.1s
+ => => exporting layers                                                                                                                                                        6.1s
+ => => writing image sha256:2d74119566c03c54b41ea5f83701e490580707c296d304118005c67094336e19                                                                                   0.0s
+ => => naming to 127.0.0.1:30470/hasher:0.1                                                                                                                                    0.0s
+ => [hasher] resolving provenance for metadata file                                                                                                                            0.0s
+[+] Building 4/4
+ ✔ hasher  Built                                                                                                                                                               0.0s 
+ ✔ rng     Built                                                                                                                                                               0.0s 
+ ✔ webui   Built                                                                                                                                                               0.0s 
+ ✔ worker  Built                                                                                                                                                               0.0s 
+pi@pi-red:~/container.training/stacks $ docker compose -f dockercoins.yml push
+WARN[0000] /home/pi/container.training/stacks/dockercoins.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion 
+[+] Pushing 28/32
+ ✔ redis Skipped                                                                                                                                                               0.0s 
+ ✔ Pushing 127.0.0.1:30470/worker:0.1: b90dc6830f3e Pushed                                                                                                                     0.6s 
+ ✔ Pushing 127.0.0.1:30470/rng:0.1: b579a3fad47c Pushed                                                                                                                        0.3s 
+ ✔ Pushing 127.0.0.1:30470/rng:0.1: a4066965dadf Pushed                                                                                                                        5.7s 
+ ✔ Pushing 127.0.0.1:30470/rng:0.1: 49a13b4ed03b Pushed                                                                                                                        0.2s 
+ ✔ Pushing 127.0.0.1:30470/rng:0.1: 6c855cedcf2e Pushed                                                                                                                       14.1s 
+ ✔ Pushing 127.0.0.1:30470/rng:0.1: b28c4e0aee72 Pushed                                                                                                                        1.0s 
+ ✔ Pushing 127.0.0.1:30470/rng:0.1: 0b83d017db6e Pushed                                                                                                                        4.0s 
+ ✔ Pushing 127.0.0.1:30470/worker:0.1: 4e9928f3b100 Pushed                                                                                                                     2.5s 
+ ✔ Pushing 127.0.0.1:30470/worker:0.1: 4628829de5e2 Pushed                                                                                                                     5.7s 
+ ⠋ Pushing 127.0.0.1:30470/worker:0.1: 49a13b4ed03b Mounted from rng                                                                                                          64.0s 
+ ✔ Pushing 127.0.0.1:30470/worker:0.1: 6c855cedcf2e Pushed                                                                                                                    15.4s 
+ ⠋ Pushing 127.0.0.1:30470/worker:0.1: b28c4e0aee72 Mounted from rng                                                                                                          64.0s 
+ ⠋ Pushing 127.0.0.1:30470/worker:0.1: 0b83d017db6e Mounted from rng                                                                                                          64.0s 
+ ✔ Pushing 127.0.0.1:30470/webui:0.1: 429ca6b1b6ad Pushed                                                                                                                      4.9s 
+ ✔ Pushing 127.0.0.1:30470/webui:0.1: 1d49904db8a7 Pushed                                                                                                                      5.7s 
+ ✔ Pushing 127.0.0.1:30470/webui:0.1: e5e4f7c29386 Pushed                                                                                                                      6.5s 
+ ✔ Pushing 127.0.0.1:30470/webui:0.1: 1d51bbe632cb Pushed                                                                                                                     15.3s 
+ ✔ Pushing 127.0.0.1:30470/webui:0.1: 867f22e49496 Pushed                                                                                                                      7.3s 
+ ✔ Pushing 127.0.0.1:30470/webui:0.1: 2aa7f439e830 Pushed                                                                                                                     25.6s 
+ ✔ Pushing 127.0.0.1:30470/webui:0.1: 3562b882efb0 Pushed                                                                                                                      7.8s 
+ ✔ Pushing 127.0.0.1:30470/webui:0.1: 7abf21970883 Pushed                                                                                                                      8.2s 
+ ✔ Pushing 127.0.0.1:30470/webui:0.1: 10469fb722b4 Pushed                                                                                                                     23.2s 
+ ✔ Pushing 127.0.0.1:30470/webui:0.1: 363f5d392123 Pushed                                                                                                                     51.4s 
+ ✔ Pushing 127.0.0.1:30470/hasher:0.1: 894ed3119f43 Pushed                                                                                                                    15.7s 
+ ✔ Pushing 127.0.0.1:30470/hasher:0.1: 29e95bd44111 Pushed                                                                                                                    16.8s 
+ ✔ Pushing 127.0.0.1:30470/hasher:0.1: c10c83b13337 Pushed                                                                                                                    16.8s 
+ ✔ Pushing 127.0.0.1:30470/hasher:0.1: 25bcd38b2eb4 Pushed                                                                                                                    63.8s 
+ ✔ Pushing 127.0.0.1:30470/hasher:0.1: d2a16db07749 Pushed                                                                                                                    17.1s 
+ ✔ Pushing 127.0.0.1:30470/hasher:0.1: 2e4f320cd395 Pushed                                                                                                                    40.7s 
+ ✔ Pushing 127.0.0.1:30470/hasher:0.1: e4dbfc7260a3 Pushed                                                                                                                    23.5s 
+ ⠋ Pushing 127.0.0.1:30470/hasher:0.1: 0b83d017db6e Mounted from worker                                                                                                       64.0s 
+
+```
+
+Let's have a look at the `dockercoins.yml` file while this is building and pushing.
+
+```yaml
+version: "3"
+
+services:
+  rng:
+    build: dockercoins/rng
+    image: ${REGISTRY-127.0.0.1:5000}/rng:${TAG-latest}
+    deploy:
+      mode: global
+  ...
+  redis:
+    image: redis
+  ...
+  worker:
+    build: dockercoins/worker
+    image: ${REGISTRY-127.0.0.1:5000}/worker:${TAG-latest}
+    ...
+    deploy:
+      replicas: 10
+```
+
+## Avoiding the `latest` tag
+
+.warning[Make sure that you've set the `TAG` variable properly!]
+
+- If you don't, the tag will default to `latest`
+
+- The problem with `latest`: nobody knows what it points to!
+
+  - the latest commit in the repo?
+
+  - the latest commit in some branch? (Which one?)
+
+  - the latest tag?
+
+  - some random version pushed by a random team member?
+
+- If you keep pushing the `latest` tag, how do you roll back?
+
+- Image tags should be meaningful, i.e. correspond to code branches, tags, or hashes
+
+## Checking the content of the registry
+
+- All our images should now be in the registry
+
+- Re-run the same `curl` command as earlier:
+  ```bash
+	pi@pi-red:~/container.training/stacks $ curl $REGISTRY/v2/_catalog
+	{"repositories":["busybox","hasher","rng","webui","worker"]}
+  ```
+
+```
+In these slides, all the commands to deploy
+DockerCoins will use a $REGISTRY environment
+variable, so that we can quickly switch from
+the self-hosted registry to pre-built images
+hosted on the Docker Hub. So make sure that
+this $REGISTRY variable is set correctly when
+running these commands!
+```
+
+# Running our application on Kubernetes
+
+- We can now deploy our code (as well as a redis instance)
+
+- Deploy `redis`:
+  ```bash
+	pi@pi-red:~/container.training/stacks $ kubectl create deployment redis --image=redis
+	deployment.apps/redis created
+  ```
+
+- Deploy everything else:
+  ```bash
+	pi@pi-red:~/container.training/stacks $ kubectl create deployment hasher --image=dockercoins/hasher:v0.1
+	deployment.apps/hasher created
+	pi@pi-red:~/container.training/stacks $ kubectl create deployment rng --image=dockercoins/rng:v0.1
+	deployment.apps/rng created
+	pi@pi-red:~/container.training/stacks $ kubectl create deployment webui --image=dockercoins/webui:v0.1
+	deployment.apps/webui created
+	pi@pi-red:~/container.training/stacks $ kubectl create deployment worker --image=dockercoins/worker:v0.1
+	deployment.apps/worker created
+  ```
+
+---
+
+class: extra-details
+
+## Deploying other images
+
+- If we wanted to deploy images from another registry ...
+
+- ... Or with a different tag ...
+
+- ... We could use the following snippet:
+
+```bash
+  REGISTRY=dockercoins
+  TAG=v0.1
+  for SERVICE in hasher rng webui worker; do
+    kubectl create deployment $SERVICE --image=$REGISTRY/$SERVICE:$TAG
+  done
+```
+
+---
+
+## Is this working?
+
+- After waiting for the deployment to complete, let's look at the logs!
+
+  (Hint: use `kubectl get deploy -w` to watch deployment events)
+
+
+- Look at some logs:
+  ```bash
+	pi@pi-red:~ $ kubectl logs deploy/rng
+	* Serving Flask app 'rng' (lazy loading)
+	* Environment: production
+	WARNING: This is a development server. Do not use it in a production deployment.
+	Use a production WSGI server instead.
+	* Debug mode: off
+	* Running on all addresses.
+	WARNING: This is a development server. Do not use it in a production deployment.
+	* Running on http://10.244.1.27:80/ (Press CTRL+C to quit)
+
+	pi@pi-red:~ $ kubectl logs deploy/worker
+	Error from server (BadRequest): container "worker" in pod "worker-5c6f84b477-nrh7g" is waiting to start: ContainerCreating
+  ```
+
+🤔 `rng` is fine ... But not `worker`.
+
+💡 Oh right! We forgot to `expose`.
+
+---
+
+## Connecting containers together
+
+- Three deployments need to be reachable by others: `hasher`, `redis`, `rng`
+
+- `worker` doesn't need to be exposed
+
+- `webui` will be dealt with later
+
+- Expose each deployment, specifying the right port:
+  ```bash
+	pi@pi-red:~ $ kubectl expose deployment redis --port 6379
+	service/redis exposed
+	pi@pi-red:~ $ kubectl expose deployment rng --port 80
+	service/rng exposed
+	pi@pi-red:~ $ kubectl expose deployment hasher --port 80
+	service/hasher exposed
+  ```
+
+---
+
+## Is this working yet?
+
+- The `worker` has an infinite loop, that retries 10 seconds after an error
+
+- Stream the worker's logs:
+  ```bash
+  kubectl logs deploy/worker --follow
+  ```
+
+  (Give it about 10 seconds to recover)
+
+<!--
+```wait units of work done, updating hash counter```
+```key ^C```
+-->
+
+]
+
+--
+
+We should now see the `worker`, well, working happily.
+
+---
+
+## Exposing services for external access
+
+- Now we would like to access the Web UI
+
+- We will expose it with a `NodePort`
+
+  (just like we did for the registry)
+
+.lab[
+
+- Create a `NodePort` service for the Web UI:
+  ```bash
+	pi@pi-red:~ $ kubectl expose deploy/webui --type=NodePort --port=80
+	service/webui exposed
+  ```
+
+- Check the port that was allocated:
+
+  ```bash
+	pi@pi-red:~ $ kubectl get svc
+	NAME         TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)          AGE
+	hasher       ClusterIP   10.108.177.207   <none>        80/TCP           2m8s
+	kubernetes   ClusterIP   10.96.0.1        <none>        443/TCP          41m
+	redis        ClusterIP   10.106.12.142    <none>        6379/TCP         2m17s
+	registry     NodePort    10.100.144.151   <none>        5000:30470/TCP   27m
+	rng          ClusterIP   10.111.60.121    <none>        80/TCP           2m13s
+	webui        NodePort    10.109.152.138   <none>        80:30088/TCP     29s
+  ```
+
+## Accessing the web UI
+
+- We can now connect to *any node*, on the allocated node port, to view the web UI
+
+```bash
+pi@pi-red:~ $ kubectl get nodes -o wide
+NAME       STATUS   ROLES           AGE   VERSION   INTERNAL-IP     EXTERNAL-IP   OS-IMAGE                         KERNEL-VERSION       CONTAINER-RUNTIME
+pi-black   Ready    <none>          42m   v1.33.2   192.168.0.101   <none>        Debian GNU/Linux 12 (bookworm)   6.12.25+rpt-rpi-v8   containerd://1.7.27
+pi-red     Ready    control-plane   43m   v1.33.2   192.168.0.152   <none>        Debian GNU/Linux 12 (bookworm)   6.6.51+rpt-rpi-v8    containerd://1.7.27
+```
+
+- Open the web UI in your browser (http://192.168.0.152:30088)
+
+Yes, this may take a little while to update. *(Narrator: it was DNS.)*
+
+
+*Alright, we're back to where we started, when we were running on a single node!*
+
+# Gentle introduction to YAML
+
+- YAML Ain't Markup Language (according to [yaml.org][yaml])
+
+- *Almost* required when working with containers:
+
+  - Docker Compose files
+
+  - Kubernetes manifests
+
+  - Many CI pipelines (GitHub, GitLab...)
+
+- If you don't know much about YAML, this is for you!
+
+[yaml]: https://yaml.org/
+
+---
+
+## What is it?
+
+- Data representation language
+
+```yaml
+- country: France
+  capital: Paris
+  code: fr
+  population: 68042591
+- country: Germany
+  capital: Berlin
+  code: de
+  population: 84270625
+- country: Norway
+  capital: Oslo
+  code: no # It's a trap!
+  population: 5425270
+```
+
+- Even without knowing YAML, we probably can add a country to that file :)
+
+---
+
+## Trying YAML
+
+- Method 1: in the browser
+
+  https://onlineyamltools.com/convert-yaml-to-json
+
+  https://onlineyamltools.com/highlight-yaml
+
+- Method 2: in a shell
+
+  ```bash
+  yq . foo.yaml
+  ```
+
+- Method 3: in Python
+
+  ```python
+    import yaml; yaml.safe_load("""
+    - country: France
+      capital: Paris
+    """)
+  ```
+
+---
+
+## Basic stuff
+
+- Strings, numbers, boolean values, `null`
+
+- Sequences (=arrays, lists)
+
+- Mappings (=objects)
+
+- Superset of JSON
+
+  (if you know JSON, you can just write JSON)
+
+- Comments start with `#`
+
+- A single *file* can have multiple *documents*
+
+  (separated by `---` on a single line)
+
+---
+
+## Sequences
+
+- Example: sequence of strings
+  ```yaml
+  [ "france", "germany", "norway" ]
+  ```
+
+- Example: the same sequence, without the double-quotes
+  ```yaml
+  [ france, germany, norway ]
+  ```
+
+- Example: the same sequence, in "block collection style" (=multi-line)
+  ```yaml
+  - france
+  - germany
+  - norway
+  ```
+
+---
+
+## Mappings
+
+- Example: mapping strings to numbers
+  ```yaml
+  { "france": 68042591, "germany": 84270625, "norway": 5425270 }
+  ```
+
+- Example: the same mapping, without the double-quotes
+  ```yaml
+  { france: 68042591, germany: 84270625, norway: 5425270 }
+  ```
+
+- Example: the same mapping, in "block collection style"
+  ```yaml
+  france: 68042591
+  germany: 84270625
+  norway: 5425270
+  ```
+
+---
+
+## Combining types
+
+- In a sequence (or mapping) we can have different types
+
+  (including other sequences or mappings)
+
+- Example:
+  ```yaml
+  questions: [ name, quest, favorite color ]
+  answers: [ "Arthur, King of the Britons", Holy Grail, purple, 42 ]
+  ```
+
+- Note that we need to quote "Arthur" because of the comma
+
+- Note that we don't have the same number of elements in questions and answers
+
+---
+
+## More combinations
+
+- Example:
+  ```yaml
+    - service: nginx
+      ports: [ 80, 443 ]
+    - service: bind
+      ports: [ 53/tcp, 53/udp ]
+    - service: ssh
+      ports: 22
+  ```
+
+- Note that `ports` doesn't always have the same type
+
+  (the code handling that data will probably have to be smart!)
+
+---
+
+## ⚠️ Automatic booleans
+
+```yaml
+codes:
+  france: fr
+  germany: de
+  norway: no
+```
+
+--
+
+```json
+{
+  "codes": {
+    "france": "fr",
+    "germany": "de",
+    "norway": false
+  }
+}
+```
+
+---
+
+## ⚠️ Automatic booleans
+
+- `no` can become `false`
+
+  (it depends on the YAML parser used)
+
+- It should be quoted instead:
+
+  ```yaml
+    codes:
+      france: fr
+      germany: de
+      norway: "no"
+  ```
+
+---
+
+## ⚠️ Automatic floats
+
+```yaml
+version:
+  libfoo: 1.10
+  fooctl: 1.0
+```
+
+--
+
+```json
+{
+  "version": {
+    "libfoo": 1.1,
+    "fooctl": 1
+  }
+}
+```
+
+---
+
+## ⚠️ Automatic floats
+
+- Trailing zeros disappear
+
+- These should also be quoted:
+
+  ```yaml
+    version:
+      libfoo: "1.10"
+      fooctl: "1.0"
+  ```
+
+---
+
+## ⚠️ Automatic times
+
+```yaml
+portmap:
+- 80:80
+- 22:22
+```
+
+--
+
+```json
+{
+  "portmap": [
+    "80:80",
+    1342
+  ]
+}
+```
+
+---
+
+## ⚠️ Automatic times
+
+- `22:22` becomes `1342`
+
+- Thats 22 minutes and 22 seconds = 1342 seconds
+
+- Again, it should be quoted
+
+---
+
+## Document separator
+
+- A single YAML *file* can have multiple *documents* separated by `---`:
+
+  ```yaml
+    This is a document consisting of a single string.
+    --- 💡
+    name: The second document
+    type: This one is a mapping (key→value)
+    --- 💡
+    - Third document
+    - This one is a sequence
+  ```
+
+- Some folks like to add an extra `---` at the beginning and/or at the end
+
+  (it's not mandatory but can help e.g. to `cat` multiple files together)
+
+.footnote[💡 Ignore this; it's here to work around [this issue][remarkyaml].]
+
+[remarkyaml]: https://github.com/gnab/remark/issues/679
+
+---
+
+## Multi-line strings
+
+Try the following block in a YAML parser:
+
+```yaml
+add line breaks: "in double quoted strings\n(like this)"
+preserve line break: |
+  by using
+  a pipe (|)
+  (this is great for embedding shell scripts, configuration files...)
+do not preserve line breaks: >
+  by using
+  a greater-than (>)
+  (this is great for embedding very long lines)
+```
+
+See https://yaml-multiline.info/ for advanced multi-line tips!
+
+(E.g. to strip or keep extra `\n` characters at the end of the block.)
+
+---
+
+class: extra-details
+
+## Advanced features
+
+Anchors let you "memorize" and re-use content:
+
+```yaml
+debian: &debian
+  packages: deb
+  latest-stable: bullseye
+
+also-debian: *debian
+
+ubuntu:
+  <<: *debian
+  latest-stable: jammy
+```
+
+---
+
+class: extra-details
+
+## YAML, good or evil?
+
+- Natural progression from XML to JSON to YAML
+
+- There are other data languages out there
+
+  (e.g. HCL, domain-specific things crafted with Ruby, CUE...)
+
+- Compromises are made, for instance:
+
+  - more user-friendly → more "magic" with side effects
+
+  - more powerful → steeper learning curve
+
+- Love it or loathe it but it's a good idea to understand it!
+
+- Interesting tool if you appreciate YAML: https://carvel.dev/ytt/
+
+# Deploying with YAML
+
+- So far, we created resources with the following commands:
+
+  - `kubectl run`
+
+  - `kubectl create deployment`
+
+  - `kubectl expose`
+
+- We can also create resources directly with YAML manifests
+
+## Why use YAML? (1/3)
+
+- Some resources cannot be created easily with `kubectl`
+
+  (e.g. DaemonSets, StatefulSets, webhook configurations...)
+
+- Some features and fields aren't directly available
+
+  (e.g. resource limits, healthchecks, volumes...)
+
+## Why use YAML? (2/3)
+
+- Create a complicated resource with a single, simple command:
+
+  `kubectl create -f stuff.yaml`
+
+- Create *multiple* resources with a single, simple command:
+
+  `kubectl create -f more-stuff.yaml` or `kubectl create -f directory-with-yaml/`
+
+- Create resources from a remote manifest:
+
+  `kubectl create -f https://.../.../stuff.yaml`
+
+- Create and update resources:
+
+  `kubectl apply -f stuff.yaml`
+
+## Why use YAML? (3/3)
+
+- YAML lets us work *declaratively*
+
+- Describe what we want to deploy/run on Kubernetes
+
+  ("desired state")
+
+- Use tools like `kubectl`, Helm, kapp, Flux, ArgoCD... to make it happen
+
+  ("reconcile" actual state with desired state)
+
+- Very similar to e.g. Terraform
+
+## Overrides and `kubectl set`
+
+Just so you know...
+
+- `kubectl create deployment ... --overrides '{...}'`
+
+  *specify a patch that will be applied on top of the YAML generated by `kubectl`*
+
+- `kubectl set ...`
+
+  *lets us change e.g. images, service accounts, resources, and much more*
+
+## Various ways to write YAML
+
+- From examples in the docs, tutorials, blog posts, LLMs...
+
+  (easiest option when getting started)
+
+- Dump an existing resource with `kubectl get -o yaml ...`
+
+  (includes many extra fields; it is recommended to clean up the result)
+
+- Ask `kubectl` to generate the YAML
+
+  (with `kubectl --dry-run=client -o yaml create/run ...`)
+
+- Completely from scratch with our favorite editor
+
+  (black belt level😅)
+
+## Writing a Pod manifest
+
+- Let's use `kubectl --dry-run=client -o yaml`
+
+- Generate the Pod manifest:
+  ```bash
+	pi@pi-red:~ $ kubectl run --dry-run=client -o yaml purple --image=jpetazzo/color
+	apiVersion: v1
+	kind: Pod
+	metadata:
+	creationTimestamp: null
+	labels:
+		run: purple
+	name: purple
+	spec:
+	containers:
+	- image: jpetazzo/color
+		name: purple
+		resources: {}
+	dnsPolicy: ClusterFirst
+	restartPolicy: Always
+	status: {}
+  ```
+
+- Save it to a file:
+  ```bash
+	pi@pi-red:~ $ kubectl run --dry-run=client -o yaml purple --image=jpetazzo/color \
+	> pod-purple.yaml
+	pi@pi-red:~ $ ls
+	container.training  k8-init.sh  k8s-install.sh  master.sh  myenv  out.dat  out.png  pingpong.yaml  pod-purple.yaml
+	pi@pi-red:~ $ cat pod-purple.yaml
+	apiVersion: v1
+	kind: Pod
+	metadata:
+	creationTimestamp: null
+	labels:
+		run: purple
+	name: purple
+	spec:
+	containers:
+	- image: jpetazzo/color
+		name: purple
+		resources: {}
+	dnsPolicy: ClusterFirst
+	restartPolicy: Always
+	status: {}
+  ```
+
+## Running the Pod
+
+- Let's create the Pod with the manifest we just generated
+
+.lab[
+
+- Create all the resources (at this point, just our Pod) described in the manifest:
+  ```bash
+	pi@pi-red:~ $ kubectl create -f pod-purple.yaml
+	pod/purple created
+  ```
+
+- Confirm that the Pod is running
+  ```bash
+	pi@pi-red:~ $ kubectl get pods
+	NAME                        READY   STATUS    RESTARTS   AGE
+	hasher-99bbd4bb-h955v       1/1     Running   0          63m
+	pingpong-5859ffb968-h5qmm   1/1     Running   0          96m
+	purple                      1/1     Running   0          25s
+	redis-7b47f84cc4-975m7      1/1     Running   0          63m
+	registry-848598b5b6-pbkgj   1/1     Running   0          86m
+	rng-65d885d498-lcw97        1/1     Running   0          63m
+	webui-74bb6bbc59-d4sft      1/1     Running   0          63m
+	worker-5c6f84b477-nrh7g     1/1     Running   0          63m
+  ```
+
+## Comparing with direct `kubectl run`
+
+- The Pod should be identical to one created directly with `kubectl run`
+
+.lab[
+
+- Create a Pod directly with `kubectl run`:
+  ```bash
+	pi@pi-red:~ $ kubectl run yellow --image=jpetazzo/color
+	pod/yellow created
+  ```
+
+- Compare both Pod manifests and status:
+  ```bash
+	pi@pi-red:~ $ kubectl get pod purple -o yaml
+	apiVersion: v1
+	kind: Pod
+	metadata:
+	creationTimestamp: "2025-07-18T16:00:42Z"
+	generation: 1
+	labels:
+		run: purple
+	name: purple
+	namespace: default
+	resourceVersion: "9101"
+	uid: a34c6b61-255f-4137-80e1-9b024e2dfc6d
+	spec:
+	containers:
+	- image: jpetazzo/color
+		imagePullPolicy: Always
+		name: purple
+		resources: {}
+		terminationMessagePath: /dev/termination-log
+		terminationMessagePolicy: File
+		volumeMounts:
+		- mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+		name: kube-api-access-4jzjz
+		readOnly: true
+	dnsPolicy: ClusterFirst
+	enableServiceLinks: true
+	nodeName: pi-black
+	preemptionPolicy: PreemptLowerPriority
+	priority: 0
+	restartPolicy: Always
+	schedulerName: default-scheduler
+	securityContext: {}
+	serviceAccount: default
+	serviceAccountName: default
+	terminationGracePeriodSeconds: 30
+	tolerations:
+	- effect: NoExecute
+		key: node.kubernetes.io/not-ready
+		operator: Exists
+		tolerationSeconds: 300
+	- effect: NoExecute
+		key: node.kubernetes.io/unreachable
+		operator: Exists
+		tolerationSeconds: 300
+	volumes:
+	- name: kube-api-access-4jzjz
+		projected:
+		defaultMode: 420
+		sources:
+		- serviceAccountToken:
+			expirationSeconds: 3607
+			path: token
+		- configMap:
+			items:
+			- key: ca.crt
+				path: ca.crt
+			name: kube-root-ca.crt
+		- downwardAPI:
+			items:
+			- fieldRef:
+				apiVersion: v1
+				fieldPath: metadata.namespace
+				path: namespace
+	status:
+	conditions:
+	- lastProbeTime: null
+		lastTransitionTime: "2025-07-18T16:00:46Z"
+		status: "True"
+		type: PodReadyToStartContainers
+	- lastProbeTime: null
+		lastTransitionTime: "2025-07-18T16:00:42Z"
+		status: "True"
+		type: Initialized
+	- lastProbeTime: null
+		lastTransitionTime: "2025-07-18T16:00:46Z"
+		status: "True"
+		type: Ready
+	- lastProbeTime: null
+		lastTransitionTime: "2025-07-18T16:00:46Z"
+		status: "True"
+		type: ContainersReady
+	- lastProbeTime: null
+		lastTransitionTime: "2025-07-18T16:00:42Z"
+		status: "True"
+		type: PodScheduled
+	containerStatuses:
+	- containerID: containerd://5b044d0afda1060f38c6c07b02c4eed9386278986dac56d87e86494546e6d966
+		image: docker.io/jpetazzo/color:latest
+		imageID: docker.io/jpetazzo/color@sha256:f4c74129c53db381b8eedd37ec0e6669ebff970308ce173630e80c5c5ecff755
+		lastState: {}
+		name: purple
+		ready: true
+		resources: {}
+		restartCount: 0
+		started: true
+		state:
+		running:
+			startedAt: "2025-07-18T16:00:45Z"
+		volumeMounts:
+		- mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+		name: kube-api-access-4jzjz
+		readOnly: true
+		recursiveReadOnly: Disabled
+	hostIP: 192.168.0.101
+	hostIPs:
+	- ip: 192.168.0.101
+	phase: Running
+	podIP: 10.244.1.30
+	podIPs:
+	- ip: 10.244.1.30
+	qosClass: BestEffort
+	startTime: "2025-07-18T16:00:42Z"
+	pi@pi-red:~ $ kubectl get pod yellow -o yaml
+	apiVersion: v1
+	kind: Pod
+	metadata:
+	creationTimestamp: "2025-07-18T16:01:47Z"
+	generation: 1
+	labels:
+		run: yellow
+	name: yellow
+	namespace: default
+	resourceVersion: "9200"
+	uid: 317f87f7-04f0-4d3b-ab79-fa060f9979bd
+	spec:
+	containers:
+	- image: jpetazzo/color
+		imagePullPolicy: Always
+		name: yellow
+		resources: {}
+		terminationMessagePath: /dev/termination-log
+		terminationMessagePolicy: File
+		volumeMounts:
+		- mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+		name: kube-api-access-5kvql
+		readOnly: true
+	dnsPolicy: ClusterFirst
+	enableServiceLinks: true
+	nodeName: pi-black
+	preemptionPolicy: PreemptLowerPriority
+	priority: 0
+	restartPolicy: Always
+	schedulerName: default-scheduler
+	securityContext: {}
+	serviceAccount: default
+	serviceAccountName: default
+	terminationGracePeriodSeconds: 30
+	tolerations:
+	- effect: NoExecute
+		key: node.kubernetes.io/not-ready
+		operator: Exists
+		tolerationSeconds: 300
+	- effect: NoExecute
+		key: node.kubernetes.io/unreachable
+		operator: Exists
+		tolerationSeconds: 300
+	volumes:
+	- name: kube-api-access-5kvql
+		projected:
+		defaultMode: 420
+		sources:
+		- serviceAccountToken:
+			expirationSeconds: 3607
+			path: token
+		- configMap:
+			items:
+			- key: ca.crt
+				path: ca.crt
+			name: kube-root-ca.crt
+		- downwardAPI:
+			items:
+			- fieldRef:
+				apiVersion: v1
+				fieldPath: metadata.namespace
+				path: namespace
+	status:
+	conditions:
+	- lastProbeTime: null
+		lastTransitionTime: "2025-07-18T16:01:50Z"
+		status: "True"
+		type: PodReadyToStartContainers
+	- lastProbeTime: null
+		lastTransitionTime: "2025-07-18T16:01:47Z"
+		status: "True"
+		type: Initialized
+	- lastProbeTime: null
+		lastTransitionTime: "2025-07-18T16:01:50Z"
+		status: "True"
+		type: Ready
+	- lastProbeTime: null
+		lastTransitionTime: "2025-07-18T16:01:50Z"
+		status: "True"
+		type: ContainersReady
+	- lastProbeTime: null
+		lastTransitionTime: "2025-07-18T16:01:47Z"
+		status: "True"
+		type: PodScheduled
+	containerStatuses:
+	- containerID: containerd://25ac7ea9b7e7b98ed3bd5f9e6f08c68b6e453ae37ee905513717bdd87052eedf
+		image: docker.io/jpetazzo/color:latest
+		imageID: docker.io/jpetazzo/color@sha256:f4c74129c53db381b8eedd37ec0e6669ebff970308ce173630e80c5c5ecff755
+		lastState: {}
+		name: yellow
+		ready: true
+		resources: {}
+		restartCount: 0
+		started: true
+		state:
+		running:
+			startedAt: "2025-07-18T16:01:50Z"
+		volumeMounts:
+		- mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+		name: kube-api-access-5kvql
+		readOnly: true
+		recursiveReadOnly: Disabled
+	hostIP: 192.168.0.101
+	hostIPs:
+	- ip: 192.168.0.101
+	phase: Running
+	podIP: 10.244.1.31
+	podIPs:
+	- ip: 10.244.1.31
+	qosClass: BestEffort
+	startTime: "2025-07-18T16:01:47Z"
+  ```
+
+## Generating a Deployment manifest
+
+- After a Pod, let's create a Deployment!
+
+- Generate the YAML for a Deployment:
+  ```bash
+	pi@pi-red:~ $ kubectl create deployment purple --image=jpetazzo/color -o yaml --dry-run=client
+	apiVersion: apps/v1
+	kind: Deployment
+	metadata:
+	creationTimestamp: null
+	labels:
+		app: purple
+	name: purple
+	spec:
+	replicas: 1
+	selector:
+		matchLabels:
+		app: purple
+	strategy: {}
+	template:
+		metadata:
+		creationTimestamp: null
+		labels:
+			app: purple
+		spec:
+		containers:
+		- image: jpetazzo/color
+			name: color
+			resources: {}
+	status: {}
+  ```
+
+- Save it to a file:
+  ```bash
+	pi@pi-red:~ $ kubectl create deployment purple --image=jpetazzo/color -o yaml --dry-run=client \
+	> deployment-purple.yaml
+	pi@pi-red:~ $ cat deployment-purple.yaml
+	apiVersion: apps/v1
+	kind: Deployment
+	metadata:
+	creationTimestamp: null
+	labels:
+		app: purple
+	name: purple
+	spec:
+	replicas: 1
+	selector:
+		matchLabels:
+		app: purple
+	strategy: {}
+	template:
+		metadata:
+		creationTimestamp: null
+		labels:
+			app: purple
+		spec:
+		containers:
+		- image: jpetazzo/color
+			name: color
+			resources: {}
+	status: {}
+  ```
+
+- And create the Deployment:
+  ```bash
+	pi@pi-red:~ $ kubectl create -f deployment-purple.yaml
+	deployment.apps/purple created
+  ```
+
+## Updating our Deployment
+
+- What if we want to scale that Deployment?
+
+- Option 1: `kubectl scale`
+
+- Option 2: update the YAML manifest
+
+- Let's go with option 2!
+
+- Edit the YAML manifest:
+  ```bash
+  vim deployment-purple.yaml
+  ```
+
+- Find the line with `replicas: 1` and update the number of replicas
+
+```bash
+pi@pi-red:~ $ vim deployment-purple.yaml
+pi@pi-red:~ $ cat deployment-purple.yaml 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    app: purple
+  name: purple
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: purple
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: purple
+    spec:
+      containers:
+      - image: jpetazzo/color
+        name: color
+        resources: {}
+status: {}
+```
+
+## Applying our changes
+
+- Problem: `kubectl create` won't update ("overwrite") resources
+
+- Try it out:
+  ```bash
+	pi@pi-red:~ $ kubectl create -f deployment-purple.yaml
+	Error from server (AlreadyExists): error when creating "deployment-purple.yaml": deployments.apps "purple" already exists
+  ```
+
+- So, what can we do?
+
+## Updating resources
+
+- Option 1: delete the Deployment and re-create it
+
+  (effective, but causes downtime!)
+
+- Option 2: `kubectl scale` or `kubectl edit` the Deployment
+
+  (effective, but that's cheating - we want to use YAML!)
+
+- Option 3: `kubectl apply`
+
+---
+
+## `kubectl apply` vs `create`
+
+- `kubectl create -f whatever.yaml`
+
+  - creates resources if they don't exist
+
+  - if resources already exist, don't alter them
+    <br/>(and display error message)
+
+- `kubectl apply -f whatever.yaml`
+
+  - creates resources if they don't exist
+
+  - if resources already exist, update them
+    <br/>(to match the definition provided by the YAML file)
+
+  - stores the manifest as an *annotation* in the resource
+
+---
+
+## Trying `kubectl apply`
+
+.lab[
+
+- First, delete the Deployment:
+  ```bash
+  kubectl delete deployment purple
+  ```
+
+- Re-create it using `kubectl apply`:
+  ```bash
+  kubectl apply -f deployment-purple.yaml
+  ```
+
+- Edit the YAML manifest, change the number of replicas again:
+  ```bash
+  vim deployment-purple.yaml
+  ```
+
+- Apply the new manifest:
+  ```bash
+  kubectl apply -f deployment-purple.yaml
+  ```
+
+## `create` → `apply`
+
+- What are the differences between `kubectl create -f` an `kubectl apply -f`?
+
+  - `kubectl apply` adds an annotation
+    <br/>
+    (`kubectl.kubernetes.io/last-applied-configuration`)
+
+  - `kubectl apply` makes an extra `GET` request
+    <br/>
+    (to get the existing object, or at least check if there is one)
+
+- Otherwise, the end result is the same!
+
+- It's almost always better to use `kubectl apply`
+
+  (except when we don't want the extra annotation, e.g. for huge objects like some CRDs)
+
+- From now on, we'll almost always use `kubectl apply -f` instead of `kubectl create -f`
+
+```bash
+pi@pi-red:~ $ kubectl get pods
+NAME                        READY   STATUS    RESTARTS   AGE
+hasher-99bbd4bb-h955v       1/1     Running   0          75m
+pingpong-5859ffb968-h5qmm   1/1     Running   0          108m
+purple                      1/1     Running   0          12m
+purple-65bb9bc655-lg4bd     1/1     Running   0          7m33s
+redis-7b47f84cc4-975m7      1/1     Running   0          75m
+registry-848598b5b6-pbkgj   1/1     Running   0          98m
+rng-65d885d498-lcw97        1/1     Running   0          75m
+webui-74bb6bbc59-d4sft      1/1     Running   0          75m
+worker-5c6f84b477-nrh7g     1/1     Running   0          75m
+yellow                      1/1     Running   0          11m
+pi@pi-red:~ $ kubectl apply -f deployment-purple.yaml
+Warning: resource deployments/purple is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
+deployment.apps/purple configured
+pi@pi-red:~ $ kubectl get pods
+NAME                        READY   STATUS              RESTARTS   AGE
+hasher-99bbd4bb-h955v       1/1     Running             0          75m
+pingpong-5859ffb968-h5qmm   1/1     Running             0          108m
+purple                      1/1     Running             0          12m
+purple-65bb9bc655-2n52k     0/1     ContainerCreating   0          3s
+purple-65bb9bc655-9t6pw     0/1     ContainerCreating   0          3s
+purple-65bb9bc655-bq22k     0/1     ContainerCreating   0          3s
+purple-65bb9bc655-dwfpf     0/1     ContainerCreating   0          3s
+purple-65bb9bc655-lbbjb     0/1     ContainerCreating   0          3s
+purple-65bb9bc655-lg4bd     1/1     Running             0          7m44s
+purple-65bb9bc655-p6spr     0/1     ContainerCreating   0          3s
+purple-65bb9bc655-pvxd4     0/1     ContainerCreating   0          3s
+purple-65bb9bc655-whkx4     0/1     ContainerCreating   0          3s
+purple-65bb9bc655-zk95j     0/1     ContainerCreating   0          3s
+redis-7b47f84cc4-975m7      1/1     Running             0          76m
+registry-848598b5b6-pbkgj   1/1     Running             0          98m
+rng-65d885d498-lcw97        1/1     Running             0          75m
+webui-74bb6bbc59-d4sft      1/1     Running             0          75m
+worker-5c6f84b477-nrh7g     1/1     Running             0          75m
+yellow                      1/1     Running             0          11m
+```
+
+- Here initially there was only 1 replica for purple was configured in yaml configuration file but now we have changed file using vim and then appied the configuration using kubectl apply -f `<filename>`
+
+## Adding a Service
+
+- Let's generate the YAML for a Service exposing our Deployment
+
+.lab[
+
+- Run `kubectl expose`, once again with `-o yaml --dry-run=client`:
+  ```bash
+	pi@pi-red:~ $ kubectl expose deployment purple --port 80 -o yaml --dry-run=client
+	apiVersion: v1
+	kind: Service
+	metadata:
+	creationTimestamp: null
+	labels:
+		app: purple
+	name: purple
+	spec:
+	ports:
+	- port: 80
+		protocol: TCP
+		targetPort: 80
+	selector:
+		app: purple
+	status:
+	loadBalancer: {}
+  ```
+
+- Save it to a file:
+  ```bash
+	pi@pi-red:~ $ kubectl expose deployment purple --port 80 -o yaml --dry-run=client \
+	> service-purple.yaml
+	pi@pi-red:~ $ cat service-purple.yaml
+	apiVersion: v1
+	kind: Service
+	metadata:
+	creationTimestamp: null
+	labels:
+		app: purple
+	name: purple
+	spec:
+	ports:
+	- port: 80
+		protocol: TCP
+		targetPort: 80
+	selector:
+		app: purple
+	status:
+	loadBalancer: {}
+  ```
+
+- Note: if the Deployment doesn't exist, `kubectl expose` won't work!
+
+## What if the Deployment doesn't exist?
+
+- We can also use `kubectl create service`
+
+- The syntax is slightly different
+
+  (`--port` becomes `--tcp` for some reason)
+
+.lab[
+
+- Generate the YAML with `kubectl create service`:
+  ```bash
+	pi@pi-red:~ $ kubectl create service clusterip purple --tcp 80 -o yaml --dry-run=client
+	apiVersion: v1
+	kind: Service
+	metadata:
+	creationTimestamp: null
+	labels:
+		app: purple
+	name: purple
+	spec:
+	ports:
+	- name: "80"
+		port: 80
+		protocol: TCP
+		targetPort: 80
+	selector:
+		app: purple
+	type: ClusterIP
+	status:
+	loadBalancer: {}
+  ```
+
+## Combining manifests
+
+- We can put multiple resources in a single YAML file
+
+- We need to separate them with the standard YAML document separator
+
+  (i.e. `---` standing by itself on a single line)
+
+.lab[
+
+- Generate a combined YAML file:
+  ```bash
+	pi@pi-red:~ $ for YAMLFILE in deployment-purple.yaml service-purple.yaml; do
+		echo ---
+		cat $YAMLFILE
+		done > app-purple.yaml
+	pi@pi-red:~ $ cat app-purple.yaml
+	---
+	apiVersion: apps/v1
+	kind: Deployment
+	metadata:
+	creationTimestamp: null
+	labels:
+		app: purple
+	name: purple
+	spec:
+	replicas: 10
+	selector:
+		matchLabels:
+		app: purple
+	strategy: {}
+	template:
+		metadata:
+		creationTimestamp: null
+		labels:
+			app: purple
+		spec:
+		containers:
+		- image: jpetazzo/color
+			name: color
+			resources: {}
+	status: {}
+	---
+	apiVersion: v1
+	kind: Service
+	metadata:
+	creationTimestamp: null
+	labels:
+		app: purple
+	name: purple
+	spec:
+	ports:
+	- port: 80
+		protocol: TCP
+		targetPort: 80
+	selector:
+		app: purple
+	status:
+	loadBalancer: {}
+  ```
+
+## Resource ordering
+
+- *In general,* the order of the resources doesn't matter:
+
+  - in many cases, resources don't reference each other explicitly
+    <br/>
+    (e.g. a Service can exist even if the corresponding Deployment doesn't)
+
+  - in some cases, there might be a transient error, but Kubernetes will retry
+    <br/>
+    (and eventually succeed)
+
+- One exception: Namespaces should be created *before* resources in them!
+
+## Using `-f` with other commands
+
+- We can also use `kubectl delete -f`, `kubectl label -f`, and more!
+
+.lab[
+
+- Apply the resulting YAML file:
+  ```bash
+  kubectl apply -f app-purple.yaml
+  ```
+
+- Add a label to both the Deployment and the Service:
+  ```bash
+  kubectl label -f app-purple.yaml release=production
+  ```
+
+- Delete them:
+  ```bash
+  kubectl delete -f app-purple.yaml
+  ```
+
+```bash
+pi@pi-red:~ $ kubectl apply -f app-purple.yaml
+deployment.apps/purple configured
+service/purple created
+pi@pi-red:~ $ kubectl label -f app-purple.yaml release=production
+deployment.apps/purple labeled
+service/purple labeled
+pi@pi-red:~ $ kubectl delete -f app-purple.yaml
+deployment.apps "purple" deleted
+service "purple" deleted
+pi@pi-red:~ $ kubectl get pods
+NAME                        READY   STATUS    RESTARTS   AGE
+hasher-99bbd4bb-h955v       1/1     Running   0          82m
+pingpong-5859ffb968-h5qmm   1/1     Running   0          115m
+purple                      1/1     Running   0          19m
+redis-7b47f84cc4-975m7      1/1     Running   0          82m
+registry-848598b5b6-pbkgj   1/1     Running   0          105m
+rng-65d885d498-lcw97        1/1     Running   0          82m
+webui-74bb6bbc59-d4sft      1/1     Running   0          82m
+worker-5c6f84b477-nrh7g     1/1     Running   0          82m
+yellow                      1/1     Running   0          17m
+```
+
+## Pruning¹ resources
+
+- We can also tell `kubectl` to remove old resources
+
+- This is done with `kubectl apply -f ... --prune`
+
+- It will remove resources that don't exist in the YAML file(s)
+
+- But only if they were created with `kubectl apply` in the first place
+
+  (technically, if they have an annotation `kubectl.kubernetes.io/last-applied-configuration`)
+
+.footnote[¹If English is not your first language: *to prune* means to remove dead or overgrown branches in a tree, to help it to grow.]
+
+## Advantage of YAML
+
+- Using YAML (instead of `kubectl create <kind>`) allows to be *declarative*
+
+- The YAML describes the desired state of our cluster and applications
+
+- YAML can be stored, versioned, archived (e.g. in git repositories)
+
+- To change resources, change the YAML files
+
+  (instead of using `kubectl edit`/`scale`/`label`/etc.)
+
+- Changes can be reviewed before being applied
+
+  (with code reviews, pull requests ...)
+
+- Our version control system now has a full history of what we deploy
+
+## GitOps
+
+- This workflow is sometimes called "GitOps"
+
+- There are tools to facilitate it, e.g. Flux, ArgoCD...
+
+- Compares to "Infrastructure-as-Code", but for app deployments
+
+## Actually GitOps?
+
+There is some debate around the "true" definition of GitOps:
+
+*My applications are defined with manifests, templates, configurations...
+that are stored in source repositories with version control,
+and I only make changes to my applications by changing these files,
+like I would change source code.*
+
+vs
+
+*Same, but it's only "GitOps" if the deployment of the manifests is
+full automated (as opposed to manually running commands like `kubectl apply`
+or more complex scripts or tools).*
+
+Your instructor may or may not have an opinion on the matter! 😁
+
+## YAML in practice
+
+- Get started with `kubectl create deployment` and `kubectl expose`
+
+  (until you have something that works)
+
+- Then, run these commands again, but with `-o yaml --dry-run=client`
+
+  (to generate and save YAML manifests)
+
+- Try to apply these manifests in a clean environment
+
+  (e.g. a new Namespace)
+
+- Check that everything works; tweak and iterate if needed
+
+- Commit the YAML to a repo 💯🏆️
+
+## "Day 2" YAML
+
+- Don't hesitate to remove unused fields
+
+  (e.g. `creationTimestamp: null`, most `{}` values...)
+
+- Check your YAML with:
+
+  [kube-score](https://github.com/zegl/kube-score) (installable with krew)
+
+  [kube-linter](https://github.com/stackrox/kube-linter)
+
+- Check live resources with tools like [popeye](https://popeyecli.io/)
+
+- Remember that like all linters, they need to be configured for your needs!
+
+
+## Specifying the namespace
+
+- When creating resources from YAML manifests, the namespace is optional
+
+- If we specify a namespace:
+
+  - resources are created in the specified namespace
+
+  - this is typical for things deployed only once per cluster
+
+  - example: system components, cluster add-ons ...
+
+- If we don't specify a namespace:
+
+  - resources are created in the current namespace
+
+  - this is typical for things that may be deployed multiple times
+
+  - example: applications (production, staging, feature branches ...)
+
+# Namespaces
+
+- Resources like Pods, Deployments, Services... exist in *Namespaces*
+
+- So far, we (probably) have been using the `default` Namespace
+
+- We can create other Namespaces to organize our resources
+
+---
+
+## Use-cases
+
+- Example: a "dev" cluster where each developer has their own Namespace
+
+  (and they only have access to their own Namespace, not to other folks' Namespaces)
+
+- Example: a cluster with one `production` and one `staging` Namespace
+
+  (with similar applications running in each of them, but with different sizes)
+
+- Example: a "production" cluster with one Namespace per application
+
+  (or one Namespace per component of a bigger application)
+
+- Example: a "production" cluster with many instances of the same application
+
+  (e.g. SAAS application with one instance per customer)
+
+---
+
+## Pre-existing Namespaces
+
+- On a freshly deployed cluster, we typically have the following four Namespaces:
+
+  - `default` (initial Namespace for our applications; also holds the `kubernetes` Service)
+
+  - `kube-system` (for the control plane)
+
+  - `kube-public` (contains one ConfigMap for cluster discovery)
+
+  - `kube-node-lease` (in Kubernetes 1.14 and later; contains Lease objects)
+
+- Over time, we will almost certainly create more Namespaces!
+
+---
+
+## Creating a Namespace
+
+- Let's see two ways to create a Namespace!
+
+.lab[
+
+- First, with `kubectl create namespace`:
+  ```bash
+	pi@pi-red:~ $ kubectl create namespace blue
+	namespace/blue created
+  ```
+
+- Then, with a YAML snippet:
+  ```bash
+	pi@pi-red:~ $ cat namespace.yml
+	apiVersion: v1
+	kind: Namespace
+	metadata:
+	name: green
+
+	pi@pi-red:~ $ kubectl apply -f namespace.yml
+	namespace/green created
+  ```
+
+## Using namespaces
+
+- We can pass a `-n` or `--namespace` flag to most `kubectl` commands
+
+.lab[
+
+- Create a Deployment in the `blue` Namespace:
+  ```bash
+	pi@pi-red:~ $ kubectl create deployment purple --image jpetazzo/color --namespace blue
+	deployment.apps/purple created
+  ```
+
+- Check the Pods that were just created:
+  ```bash
+	pi@pi-red:~ $ kubectl get pods --all-namespaces
+	NAMESPACE      NAME                             READY   STATUS    RESTARTS       AGE
+	blue           purple-65bb9bc655-5qw44          1/1     Running   0              16s
+	default        hasher-99bbd4bb-h955v            1/1     Running   0              135m
+	default        pingpong-5859ffb968-h5qmm        1/1     Running   0              168m
+	default        purple                           1/1     Running   0              72m
+	default        redis-7b47f84cc4-975m7           1/1     Running   0              135m
+	default        registry-848598b5b6-pbkgj        1/1     Running   0              158m
+	default        rng-65d885d498-lcw97             1/1     Running   0              135m
+	default        webui-74bb6bbc59-d4sft           1/1     Running   0              135m
+	default        worker-5c6f84b477-nrh7g          1/1     Running   0              135m
+	default        yellow                           1/1     Running   0              71m
+	kube-flannel   kube-flannel-ds-9m6jg            1/1     Running   0              171m
+	kube-flannel   kube-flannel-ds-f6prh            1/1     Running   1 (170m ago)   171m
+	kube-system    coredns-674b8bbfcf-5mbnq         1/1     Running   0              172m
+	kube-system    coredns-674b8bbfcf-gzchj         1/1     Running   0              172m
+	kube-system    etcd-pi-red                      1/1     Running   13             172m
+	kube-system    kube-apiserver-pi-red            1/1     Running   0              172m
+	kube-system    kube-controller-manager-pi-red   1/1     Running   0              172m
+	kube-system    kube-proxy-bsmnk                 1/1     Running   0              171m
+	kube-system    kube-proxy-rs5g9                 1/1     Running   0              172m
+	kube-system    kube-scheduler-pi-red            1/1     Running   0              172m
+
+	pi@pi-red:~ $ kubectl get pods --all-namespaces --selector app=purple
+	NAMESPACE   NAME                      READY   STATUS    RESTARTS   AGE
+	blue        purple-65bb9bc655-5qw44   1/1     Running   0          27s
+  ```
+
+## Switching the active Namespace
+
+- We can change the "active" Namespace
+
+- This is useful if we're going to work in a given Namespace for a while
+
+  - it is easier than passing `--namespace ...` all the time
+
+  - it helps to avoid mistakes
+    <br/>
+    (e.g.: `kubectl delete -f foo.yaml` whoops wrong Namespace!)
+
+- We're going to see ~~one~~ ~~two~~ three different methods to switch namespaces!
+
+---
+
+## Method 1 (kubens/kns)
+
+- To switch to the `blue` Namespace, run:
+  ```bash
+  kubens blue
+  ```
+
+- `kubens` is sometimes renamed or aliased to `kns`
+
+  (even less keystrokes!)
+
+- `kubens -` switches back to the previous Namespace
+
+- Pros: probably the easiest method out there
+
+- Cons: `kubens` is an extra tool that you need to install
+
+---
+
+## Method 2 (edit kubeconfig)
+
+- Edit `~/.kube/config`
+
+- There should be a `namespace:` field somewhere
+
+  - except if we haven't changed Namespace yet!
+
+  - in that case, change Namespace at least once using another method
+
+- We can just edit that file, and `kubectl` will use the new Namespace from now on
+
+- Pros: kind of easy; doesn't require extra tools
+
+- Cons: there can be multiple `namespace:` fields in that file; difficult to automate
+
+---
+
+## Method 3 (kubectl config)
+
+- To switch to the `blue` Namespace, run:
+  ```bash
+	pi@pi-red:~ $ kubectl config set-context --current --namespace=blue
+	Context "kubernetes-admin@kubernetes" modified.
+  ```
+
+- This automatically edits the kubeconfig file
+
+- This is exactly what `kubens` does behind the scenes!
+
+- Pros: always works (as long as we have `kubectl`)
+
+- Cons: long and complicated to type
+
+  (but it's a good exercise for our fingers, maybe?)
+
+## What are contexts?
+
+- Context = cluster + user + namespace
+
+- Useful to quickly switch between multiple clusters
+
+  (e.g. dev, prod, or different applications, different customers...)
+
+- Also useful to quickly switch between identities
+
+  (e.g. developer with "regular" access vs. cluster-admin)
+
+- Switch context with `kubectl config set-context` or `kubectx` / `kctx`
+
+- It is also possible to switch the kubeconfig file altogether
+
+  (by specifying `--kubeconfig` or setting the `KUBECONFIG` environment variable)
+
+
+## What's in a context
+
+- NAME is an arbitrary string to identify the context
+
+- CLUSTER is a reference to a cluster
+
+  (i.e. API endpoint URL, and optional certificate)
+
+- AUTHINFO is a reference to the authentication information to use
+
+  (i.e. a TLS client certificate, token, or otherwise)
+
+- NAMESPACE is the namespace
+
+  (empty string = `default`)
+
+---
+
+## Namespaces, Services, and DNS
+
+- When a Service is created, a record is added to the Kubernetes DNS
+
+- For instance, for service `auth` in domain `staging`, this is typically:
+
+  `auth.staging.svc.cluster.local`
+
+- By default, Pods are configured to resolve names in their Namespace's domain
+
+- For instance, a Pod in Namespace `staging` will have the following "search list":
+
+  `search staging.svc.cluster.local svc.cluster.local cluster.local`
+
+---
+
+## Pods connecting to Services
+
+- Let's assume that we are in Namespace `staging`
+
+- ... and there is a Service named `auth`
+
+- ... and we have code running in a Pod in that same Namespace
+
+- Our code can:
+
+  - connect to Service `auth` in the same Namespace with `http://auth/`
+
+  - connect to Service `auth` in another Namespace (e.g. `prod`) with `http://auth.prod`
+
+  - ... or `http://auth.prod.svc` or `http://auth.prod.svc.cluster.local`
+
+---
+
+## Deploying multiple instances of a stack
+
+If all the containers in a given stack use DNS for service discovery,
+that stack can be deployed identically in multiple Namespaces.
+
+Each copy of the stack will communicate with the services belonging
+to the stack's Namespace.
+
+Example: we can deploy multiple copies of DockerCoins, one per
+Namespace, without changing a single line of code in DockerCoins,
+and even without changing a single line of code in our YAML manifests!
+
+This is similar to what can be achieved e.g. with Docker Compose
+(but with Docker Compose, each stack is deployed in a Docker "network"
+instead of a Kubernetes Namespace).
+
+---
+
+## Namespaces and isolation
+
+- Namespaces *do not* provide isolation
+
+- By default, Pods in e.g. `prod` and `staging` Namespaces can communicate
+
+- Actual isolation is implemented with *network policies*
+
+- Network policies are resources (like deployments, services, namespaces...)
+
+- Network policies specify which flows are allowed:
+
+  - between pods
+
+  - from pods to the outside world
+
+  - and vice-versa
+
+---
+
+##  `kubens` and `kubectx`
+
+- These tools are available from https://github.com/ahmetb/kubectx
+
+- They were initially simple shell scripts, and are now full-fledged Go programs
+
+- On our clusters, they are installed as `kns` and `kctx`
+
+  (for brevity and to avoid completion clashes between `kubectx` and `kubectl`)
+
+# Setting up Kubernetes
+
+- Kubernetes is made of many components that require careful configuration
+
+- Secure operation typically requires TLS certificates and a local CA
+
+  (certificate authority)
+
+- Setting up everything manually is possible, but rarely done
+
+  (except for learning purposes)
+
+- Let's do a quick overview of available options!
+
+---
+
+## Local development
+
+- Are you writing code that will eventually run on Kubernetes?
+
+- Then it's a good idea to have a development cluster!
+
+- Instead of shipping containers images, we can test them on Kubernetes
+
+- Extremely useful when authoring or testing Kubernetes-specific objects
+
+  (ConfigMaps, Secrets, StatefulSets, Jobs, RBAC, etc.)
+
+- Extremely convenient to quickly test/check what a particular thing looks like
+
+  (e.g. what are the fields a Deployment spec?)
+
+---
+
+## One-node clusters
+
+- It's perfectly fine to work with a cluster that has only one node
+
+- It simplifies a lot of things:
+
+  - pod networking doesn't even need CNI plugins, overlay networks, etc.
+
+  - these clusters can be fully contained (no pun intended) in an easy-to-ship VM or container image
+
+  - some of the security aspects may be simplified (different threat model)
+
+  - images can be built directly on the node (we don't need to ship them with a registry)
+
+- Examples: Docker Desktop, k3d, KinD, MicroK8s, Minikube
+
+  (some of these also support clusters with multiple nodes)
+
+---
+
+## Managed clusters ("Turnkey Solutions")
+
+- Many cloud providers and hosting providers offer "managed Kubernetes"
+
+- The deployment and maintenance of the *control plane* is entirely managed by the provider
+
+  (ideally, clusters can be spun up automatically through an API, CLI, or web interface)
+
+- Given the complexity of Kubernetes, this approach is *strongly recommended*
+
+  (at least for your first production clusters)
+
+- After working for a while with Kubernetes, you will be better equipped to decide:
+
+  - whether to operate it yourself or use a managed offering
+
+  - which offering or which distribution works best for you and your needs
+
+---
+
+## Managed ≠ managed
+
+- Managed Kubernetes ≠ managed hosting
+
+- Managed hosting typically means that the hosting provider takes care of:
+
+  - installation, upgrades, time-sensitive security patches, backups
+
+  - logging and metrics collection
+
+  - setting up supervision, alerts, and on-call rotation
+
+- Managed Kubernetes typically means that the hosting provider takes care of:
+
+  - installation
+
+  - maybe upgrades (kind of; you typically need to initiate/coordinate them)
+
+  - and that's it!
+
+---
+
+## "Managed" Kubernetes
+
+- "Managed Kubernetes" gives us the equivalent of a raw VM
+
+- We still need to add a lot of things to make it production-ready
+
+  (upgrades, logging, supervision...)
+
+- We also need some almost-essential components that don't always come out of the box
+
+  - ingress controller
+
+  - network policy controller
+
+  - storage class...
+
+📽️[How to make Kubernetes ryhme with production readiness](https://www.youtube.com/watch?v=6G4v-ZE6OHI
+)
+
+---
+
+## Observability
+
+- Logging, metrics, traces...
+
+- Pick a solution (self-hosted, as-a-service?)
+
+- Configure control plane, nodes, various components
+
+- Set up dashboards, track important metrics
+
+  (e.g. on AWS, track inter-AZ and external traffic per app to avoid $$$ surprises)
+
+- Set up supervision, on-call notifications, on-call rotation
+
+---
+
+## Backups
+
+- Full machine backups of the nodes?
+
+  (not very effective)
+
+- Backup of control plane data?
+
+  (important; it's not always possible to obtain etcd backups)
+
+- Backup of persistent volumes?
+
+  (good idea; but not always effective)
+
+- App-level backups, e.g. database dumps, log-shipping?
+
+  (more effective and reliable; more work depending on the app and database)
+
+---
+
+## Upgrades
+
+- Control plane
+
+  *typically automated by the provider; but might cause breakage*
+
+- Nodes
+
+  *best case scenario: can be done in-place; otherwise: requires provisioning new nodes*
+
+- Additional components (ingress controller, operators, etc.)
+
+  *depends wildly of the components!*
+
+---
+
+## It's dangerous to go alone!
+
+Don't hesitate to hire help before going to production with your first K8S app!
+
+---
+
+## Node management
+
+- Most "Turnkey Solutions" offer fully managed control planes
+
+  (including control plane upgrades, sometimes done automatically)
+
+- However, with most providers, we still need to take care of *nodes*
+
+  (provisioning, upgrading, scaling the nodes)
+
+- Example with Amazon EKS ["managed node groups"](https://docs.aws.amazon.com/eks/latest/userguide/managed-node-groups.html):
+
+  *...when bugs or issues are reported [...] you're responsible for deploying these patched AMI versions to your managed node groups.*
+
+---
+
+## Managed clusters differences
+
+- Most providers let you pick which Kubernetes version you want
+
+  - some providers offer up-to-date versions
+
+  - others lag significantly (sometimes by 2 or 3 minor versions)
+
+- Some providers offer multiple networking or storage options
+
+- Others will only support one, tied to their infrastructure
+
+  (changing that is in theory possible, but might be complex or unsupported)
+
+- Some providers let you configure or customize the control plane
+
+  (generally through Kubernetes "feature gates")
+
+---
+
+## Choosing a provider
+
+- Pricing models differ from one provider to another
+
+  - nodes are generally charged at their usual price
+
+  - control plane may be free or incur a small nominal fee
+
+- Beyond pricing, there are *huge* differences in features between providers
+
+- The "major" providers are not always the best ones!
+
+- See [this page](https://kubernetes.io/docs/setup/production-environment/turnkey-solutions/) for a list of available providers
+
+---
+
+## Kubernetes distributions and installers
+
+- If you want to run Kubernetes yourselves, there are many options
+
+  (free, commercial, proprietary, open source ...)
+
+- Some of them are installers, while some are complete platforms
+
+- Some of them leverage other well-known deployment tools
+
+  (like Puppet, Terraform ...)
+
+- There are too many options to list them all
+
+  (check [this page](https://kubernetes.io/partners/#iframe-landscape-conformance) for an overview!)
+
+---
+
+## kubeadm
+
+- kubeadm is a tool part of Kubernetes to facilitate cluster setup
+
+- Many other installers and distributions use it (but not all of them)
+
+- It can also be used by itself
+
+- Excellent starting point to install Kubernetes on your own machines
+
+  (virtual, physical, it doesn't matter)
+
+- It even supports highly available control planes, or "multi-master"
+
+  (this is more complex, though, because it introduces the need for an API load balancer)
+
+---
+
+## Manual setup
+
+- The resources below are mainly for educational purposes!
+
+- [Kubernetes The Hard Way](https://github.com/kelseyhightower/kubernetes-the-hard-way) by Kelsey Hightower
+
+  *step by step guide to install Kubernetes on GCP, with certificates, HA...*
+
+- [Deep Dive into Kubernetes Internals for Builders and Operators](https://www.youtube.com/watch?v=3KtEAa7_duA)
+
+  *conference talk setting up a simplified Kubernetes cluster - no security or HA*
+
+- 🇫🇷[Démystifions les composants internes de Kubernetes](https://www.youtube.com/watch?v=OCMNA0dSAzc)
+
+  *improved version of the previous one, with certs and recent k8s versions*
+
+---
+
+## About our training clusters
+
+- How did we set up these Kubernetes clusters that we're using?
+
+--
+
+- We used `kubeadm` on freshly installed VM instances running Ubuntu LTS
+
+    1. Install Docker
+
+    2. Install Kubernetes packages
+
+    3. Run `kubeadm init` on the first node (it deploys the control plane on that node)
+
+    4. Set up  Weave (the overlay network) with a single `kubectl apply` command
+
+    5. Run `kubeadm join` on the other nodes (with the token produced by `kubeadm init`)
+
+    6. Copy the configuration file generated by `kubeadm init`
+
+- Check the [prepare VMs README](https://@@GITREPO@@/blob/master/prepare-vms/README.md) for more details
+
+---
+
+## `kubeadm` "drawbacks"
+
+- Doesn't set up Docker or any other container engine
+
+  (this is by design, to give us choice)
+
+- Doesn't set up the overlay network
+
+  (this is also by design, for the same reasons)
+
+- HA control plane requires [some extra steps](https://kubernetes.io/docs/setup/independent/high-availability/)
+
+- Note that HA control plane also requires setting up a specific API load balancer
+
+  (which is beyond the scope of kubeadm)
+
+
+
+
+
+
+
+
 
 
